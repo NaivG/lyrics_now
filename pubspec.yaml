@@ -1,0 +1,22 @@
+name: lyrics_now
+description: >
+  A pure-Dart lyric finder library that searches and matches precise lyrics
+  (word-by-word / line-by-line) across QQ Music, Kugou, NetEase Cloud Music and
+  LRCLIB. Inspired by and modeled after LDDC.
+version: 0.3.0
+
+environment:
+  sdk: ^3.11.0
+  flutter: ">=3.0.0"
+
+dependencies:
+  archive: ^4.0.9
+  crypto: ^3.0.7
+  encrypt: ^5.0.3
+  http: ^1.6.0
+  path: ^1.9.0
+  pointycastle: ^3.9.1
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6
