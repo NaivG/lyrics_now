@@ -5,6 +5,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:lyrics_now/lyrics_now.dart';
 import 'package:test/test.dart';
 
@@ -71,6 +73,126 @@ void main() {
     },
     skip: 'Live HTTP smoke test; only enabled with --define-by-name=net=true.',
   );
+
+  group('rate-limit backoff', () {
+    test(
+      '429 throws LyricsRateLimitedException with parsed Retry-After',
+      () async {
+        var calls = 0;
+        final client = PackageHttpClient(
+          inner: MockClient((request) async {
+            calls++;
+            return http.Response(
+              'slow down',
+              429,
+              headers: {'retry-after': '30'},
+            );
+          }),
+        );
+        addTearDown(client.close);
+
+        await expectLater(
+          client.get(Uri.parse('https://a.example.test/lyrics')),
+          throwsA(
+            isA<LyricsRateLimitedException>()
+                .having(
+                  (e) => e.retryAfter,
+                  'retryAfter',
+                  const Duration(seconds: 30),
+                )
+                .having(
+                  (e) => e.uri,
+                  'uri',
+                  Uri.parse('https://a.example.test/lyrics'),
+                ),
+          ),
+        );
+        expect(calls, 1);
+      },
+    );
+
+    test(
+      'same host fails fast during backoff; other hosts unaffected',
+      () async {
+        var calls = 0;
+        final client = PackageHttpClient(
+          inner: MockClient((request) async {
+            calls++;
+            return http.Response('slow down', 429);
+          }),
+        );
+        addTearDown(client.close);
+        final blocked = Uri.parse('https://a.example.test/lyrics');
+        final other = Uri.parse('https://b.example.test/lyrics');
+
+        await expectLater(
+          client.get(blocked),
+          throwsA(isA<LyricsRateLimitedException>()),
+        );
+        expect(calls, 1);
+
+        // 退避窗口内：同主机快速失败，不再触达网络
+        await expectLater(
+          client.get(blocked),
+          throwsA(
+            isA<LyricsRateLimitedException>().having(
+              (e) => e.retryAfter,
+              'retryAfter',
+              isNotNull,
+            ),
+          ),
+        );
+        expect(calls, 1);
+
+        // 其他主机不受影响
+        await expectLater(
+          client.get(other),
+          throwsA(isA<LyricsRateLimitedException>()),
+        );
+        expect(calls, 2);
+      },
+    );
+
+    test('Retry-After: 0 的退避窗口立即过期，后续请求正常放行', () async {
+      var calls = 0;
+      final client = PackageHttpClient(
+        inner: MockClient((request) async {
+          calls++;
+          if (calls == 1) {
+            return http.Response(
+              'slow down',
+              429,
+              headers: {'retry-after': '0'},
+            );
+          }
+          return http.Response('ok', 200);
+        }),
+      );
+      addTearDown(client.close);
+      final url = Uri.parse('https://c.example.test/lyrics');
+
+      await expectLater(
+        client.get(url),
+        throwsA(isA<LyricsRateLimitedException>()),
+      );
+
+      final response = await client.get(url);
+      expect(response.statusCode, 200);
+      expect(calls, 2);
+    });
+
+    test('non-429 HTTP errors still throw LyricsHttpStatusException', () async {
+      final client = PackageHttpClient(
+        inner: MockClient((request) async => http.Response('nope', 500)),
+      );
+      addTearDown(client.close);
+
+      await expectLater(
+        client.get(Uri.parse('https://d.example.test/lyrics')),
+        throwsA(isA<LyricsHttpStatusException>()),
+      );
+    });
+  });
 }
 
 class _RecordingHttpClient implements LyricsHttpClient {

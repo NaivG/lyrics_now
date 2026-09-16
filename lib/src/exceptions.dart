@@ -45,11 +45,10 @@ class LyricsHttpStatusException extends LyricsNetworkException {
   LyricsHttpStatusException({
     required this.statusCode,
     required String body,
-    Uri? uri,
+    super.uri,
   }) : _body = body,
        super(
          'HTTP $statusCode: ${body.isEmpty ? '<empty body>' : body}',
-         uri: uri,
        );
 
   final int statusCode;
@@ -66,8 +65,8 @@ class LyricsRequestFailedException extends LyricsNetworkException {
 
 /// Provider timed out while waiting for a response.
 class LyricsTimeoutException extends LyricsNetworkException {
-  LyricsTimeoutException({Uri? uri, this.timeout, Object? cause})
-    : super('Request timed out', uri: uri, cause: cause);
+  LyricsTimeoutException({super.uri, this.timeout, super.cause})
+    : super('Request timed out');
 
   final Duration? timeout;
 }
@@ -92,8 +91,8 @@ class LyricsAuthException extends LyricsException {
 
 /// Provider rejected the request because it was rate-limited (HTTP 429).
 class LyricsRateLimitedException extends LyricsNetworkException {
-  LyricsRateLimitedException({Uri? uri, this.retryAfter, String body = ''})
-    : super('Rate limited: ${body.isEmpty ? '<empty body>' : body}', uri: uri);
+  LyricsRateLimitedException({super.uri, this.retryAfter, String body = ''})
+    : super('Rate limited: ${body.isEmpty ? '<empty body>' : body}');
 
   /// Hint from the server via `Retry-After` if present.
   final Duration? retryAfter;

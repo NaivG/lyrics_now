@@ -94,6 +94,11 @@ abstract interface class LyricsHttpClient {
 /// Default implementation backed by `package:http`.
 ///
 /// Create one instance per `LyricFinder` and share it across providers.
+///
+/// 内建按主机的限流退避：任一请求收到 HTTP 429 后，该主机在退避窗口内的
+/// 后续请求立即以 [LyricsRateLimitedException] 快速失败（携带剩余窗口），
+/// 不再发起新连接。调用方（[LyricFinder] 的逐 provider 兜底循环）据此
+/// 跳过被限流的源，避免在限流期间继续撞击加重封禁。
 class PackageHttpClient implements LyricsHttpClient {
   PackageHttpClient({http.Client? inner, Duration? timeout})
     : _client = inner ?? http.Client(),
@@ -101,6 +106,15 @@ class PackageHttpClient implements LyricsHttpClient {
 
   final http.Client _client;
   final Duration _timeout;
+
+  /// 服务器未提供 `Retry-After` 时的默认退避窗口。
+  static const Duration _defaultRateLimitBackoff = Duration(seconds: 30);
+
+  /// 退避窗口上限，防止异常巨大的 `Retry-After` 长期锁死一个源。
+  static const Duration _maxRateLimitBackoff = Duration(minutes: 10);
+
+  /// host → 退避截止时间。
+  final Map<String, DateTime> _rateLimitedUntil = {};
 
   @override
   Map<String, String> cookies = <String, String>{};
@@ -135,6 +149,7 @@ class PackageHttpClient implements LyricsHttpClient {
   Future<LyricsHttpResponse> send(LyricsHttpRequest request) async {
     final merged = _mergeHeaders(request.headers);
     final uri = request.effectiveUri;
+    _throwIfHostInBackoff(uri);
     try {
       final streamed = await _client
           .send(
@@ -148,6 +163,11 @@ class PackageHttpClient implements LyricsHttpClient {
       return _wrap(response, uri);
     } on TimeoutException catch (e) {
       throw LyricsTimeoutException(uri: uri, timeout: _timeout, cause: e);
+    } on LyricsException {
+      // _wrap 抛出的类型化状态异常（429 限流 / 非 2xx）原样上抛，
+      // 不能被下面的兜底包装成 LyricsRequestFailedException——
+      // 调用方需要按类型区分限流与一般失败。
+      rethrow;
     } on Object catch (e) {
       throw LyricsRequestFailedException(
         '${request.method} $uri failed: $e',
@@ -217,6 +237,20 @@ class PackageHttpClient implements LyricsHttpClient {
   LyricsHttpResponse _wrap(http.Response response, Uri url) {
     final status = response.statusCode;
     final bodyText = _safeBody(response);
+    if (status == 429) {
+      final retryAfter =
+          _parseRetryAfter(response.headers['retry-after']) ??
+          _defaultRateLimitBackoff;
+      final backoff = retryAfter > _maxRateLimitBackoff
+          ? _maxRateLimitBackoff
+          : retryAfter;
+      _rateLimitedUntil[url.host] = DateTime.now().add(backoff);
+      throw LyricsRateLimitedException(
+        uri: url,
+        retryAfter: backoff,
+        body: bodyText,
+      );
+    }
     if (status < 200 || status >= 300) {
       throw LyricsHttpStatusException(
         statusCode: status,
@@ -230,5 +264,30 @@ class PackageHttpClient implements LyricsHttpClient {
       bodyBytes: response.bodyBytes,
       headers: response.headers,
     );
+  }
+
+  /// 主机仍在限流退避窗口内时快速失败，避免继续撞击。
+  void _throwIfHostInBackoff(Uri uri) {
+    final blockedUntil = _rateLimitedUntil[uri.host];
+    if (blockedUntil == null) return;
+    final remaining = blockedUntil.difference(DateTime.now());
+    if (remaining <= Duration.zero) {
+      _rateLimitedUntil.remove(uri.host);
+      return;
+    }
+    throw LyricsRateLimitedException(
+      uri: uri,
+      retryAfter: remaining,
+      body: '<host in rate-limit backoff>',
+    );
+  }
+
+  /// 解析 `Retry-After` 头，仅支持 delta-seconds（各歌词源均用此格式）。
+  /// 解析失败返回 null，由调用方使用默认退避。
+  Duration? _parseRetryAfter(String? value) {
+    if (value == null) return null;
+    final seconds = int.tryParse(value.trim());
+    if (seconds == null || seconds < 0) return null;
+    return Duration(seconds: seconds);
   }
 }
