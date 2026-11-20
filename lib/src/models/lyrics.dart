@@ -162,8 +162,31 @@ class Lyrics extends LyricsBase<LyricsData> {
   Lyrics.fromSong(SongInfo song)
     : super(LyricInfo(source: song.source, songInfo: song));
 
+  /// Default upper bound (milliseconds) applied to a line whose end is
+  /// unknown when [toFullTimestamp] has to invent one.
+  ///
+  /// Ordinary LRC only carries line *starts*: there is no information about
+  /// how long a line is sung, nor about instrumental interludes between two
+  /// lines. Stretching such a line all the way to the next line's start (the
+  /// behaviour this bound replaces) makes every interlude look like a
+  /// continuously sung line. Capping the line at this bound keeps the
+  /// remaining gap blank, which is what a player should render during a real
+  /// interlude. Pick a larger value for very slow songs, or pass
+  /// `maxLineDurationMs: null` to restore the old stretch-to-next behaviour.
+  static const int defaultMaxLineDurationMs = 8000;
+
   /// Walk each language track and produce a full-timestamp copy.
-  FSLyrics toFullTimestamp({int? durationMs}) {
+  ///
+  /// Lines whose end is genuinely known (explicit end timestamp, a trailing
+  /// word boundary, ...) keep it. Lines whose end is unknown are bounded by
+  /// [maxLineDurationMs] instead of being stretched onto the next line, so
+  /// instrumental interludes in ordinary LRC remain detectable as blank
+  /// intervals. Pass `maxLineDurationMs: null` to stretch unknown ends to the
+  /// next line's start (legacy behaviour).
+  FSLyrics toFullTimestamp({
+    int? durationMs,
+    int? maxLineDurationMs = defaultMaxLineDurationMs,
+  }) {
     final effectiveDuration = durationMs ?? inferredDuration;
     final fs = FSLyrics(_infoWith(durationMs));
     fs._types.addAll(_types);
@@ -172,6 +195,7 @@ class Lyrics extends LyricsBase<LyricsData> {
       fs._tracks[entry.key] = _fillMissingTimestamps(
         entry.value,
         effectiveDuration,
+        maxLineDurationMs,
       );
       fs._types[entry.key] = LyricsType.verbatim;
     }
@@ -364,7 +388,11 @@ FSLyricsLine _shiftFSLine(FSLyricsLine line, int offsetMs) {
 
 int _clamp(int ms) => ms < 0 ? 0 : ms;
 
-FSLyricsData _fillMissingTimestamps(LyricsData source, int durationMs) {
+FSLyricsData _fillMissingTimestamps(
+  LyricsData source,
+  int durationMs,
+  int? maxLineDurationMs,
+) {
   final list = <FSLyricsLine>[];
   for (var i = 0; i < source.length; i++) {
     final line = source[i];
@@ -388,15 +416,41 @@ FSLyricsData _fillMissingTimestamps(LyricsData source, int durationMs) {
     {
       int? candidate = line.end;
       if (candidate == null && line.words.isNotEmpty) {
-        candidate = line.words
-            .lastWhere(
-              (w) => w.end != null,
-              orElse: () => const LyricsWord(text: ''),
-            )
-            .end;
+        // Only the *last* word's end can bound the line; an earlier word end
+        // (e.g. an intermediate verbatim boundary) does not.
+        candidate = line.words.last.end;
       }
-      candidate ??= next?.start;
-      candidate ??= durationMs > lineStart ? durationMs : lineStart;
+      if (candidate == null) {
+        final int? nextStart = next?.start;
+        if (nextStart == null) {
+          // No following line: the track normally lasts until the song's end.
+          // An inferred duration that does not reach past the last word (for
+          // example the last word's own start when the source carries no
+          // duration at all) must not collapse the line to a zero-length cue.
+          final int? lastWordStart = line.words.isEmpty
+              ? null
+              : line.words.last.start;
+          final bool durationLooksValid =
+              durationMs > lineStart &&
+              (lastWordStart == null || durationMs > lastWordStart);
+          if (durationLooksValid) {
+            candidate = durationMs;
+          } else if (maxLineDurationMs != null && maxLineDurationMs > 0) {
+            candidate = lineStart + maxLineDurationMs;
+          } else {
+            candidate = lineStart;
+          }
+        } else if (maxLineDurationMs != null &&
+            maxLineDurationMs > 0 &&
+            nextStart - lineStart > maxLineDurationMs) {
+          // The next line starts far away: this is an instrumental interlude,
+          // not one long sung line. End the line at the bound so the rest of
+          // the gap stays blank.
+          candidate = lineStart + maxLineDurationMs;
+        } else {
+          candidate = nextStart;
+        }
+      }
       lineEnd = _clamp(candidate);
     }
 

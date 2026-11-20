@@ -24,7 +24,7 @@ Future<void> main(List<String> args) async {
   }
 
   if (args.first == '--version') {
-    print('lyrics_now 0.3.0 (LGPL/GPL LICENSE: GPL-3.0-only)');
+    print('lyrics_now 0.3.1 (LGPL/GPL LICENSE: GPL-3.0-only)');
     return;
   }
 

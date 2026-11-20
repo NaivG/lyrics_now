@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.1
+
+- Plain line-by-line LRC no longer gets a fabricated `end` equal to the next
+  line's `start`. `parseLrc` only fills timestamps the input actually carries,
+  so ordinary LRC lines keep `end == null` (also for multi-stamp NetEase-style
+  lines). Consumers can now tell a held line from an instrumental interlude
+  instead of every interlude being swallowed by a stretched line. This
+  intentionally diverges from LDDC's previous-line fill.
+- Explicit end markers are now honoured: a trailing `<mm:ss.xx>` on enhanced
+  LRC and a trailing `[mm:ss.xx]` on verbatim LRC set the line (and last word)
+  end instead of being dropped.
+- `Lyrics.toFullTimestamp` gains `maxLineDurationMs` (defaults to
+  `Lyrics.defaultMaxLineDurationMs`, 8 s). A line whose end is unknown is
+  capped instead of being stretched onto the next line, so instrumental gaps
+  stay blank after conversion (e.g. in SRT output); pass `null` to restore the
+  old stretch-to-next behaviour. Explicitly known ends are untouched, and the
+  final line still runs to the track duration (or to the bound when the
+  duration is unknown) — only gaps *between* lines are treated as interludes.
+- Tests: regression coverage for plain-LRC interludes, explicit enhanced /
+  verbatim end markers, capped full-timestamp conversion, and the legacy
+  opt-out.
+
 ## 0.3.0
 
 - New providers: `QmProvider` (QQ Music `musicu.fcg` envelope with cloud-QRC

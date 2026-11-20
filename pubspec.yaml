@@ -3,7 +3,7 @@ description: >
   A pure-Dart lyric finder library that searches and matches precise lyrics
   (word-by-word / line-by-line) across QQ Music, Kugou, NetEase Cloud Music and
   LRCLIB. Inspired by and modeled after LDDC.
-version: 0.3.0
+version: 0.3.1
 
 environment:
   sdk: ^3.11.0

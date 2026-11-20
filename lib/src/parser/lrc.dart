@@ -37,6 +37,14 @@ final RegExp _inlineBoundaryPattern = RegExp(
 );
 
 /// Parse a single LRC document into `(tags, lines)`.
+///
+/// Only timestamps the input actually provides are filled in. Ordinary
+/// line-by-line LRC carries no line durations, so such lines keep
+/// `end == null` rather than being stretched onto the next line's start:
+/// consumers can then tell an unknown line length (and therefore a possible
+/// instrumental interlude) apart from a known one. Explicit end markers
+/// (trailing `<mm:ss.xx>` on enhanced lines, trailing `[mm:ss.xx]` on verbatim
+/// lines) are still honoured.
 LrcParseResult parseLrc(String lrc) {
   if (lrc.trim().isEmpty) {
     throw LyricsParseException('Empty LRC content');
@@ -182,20 +190,28 @@ LyricsLine _parseVerbatim(List<RegExpMatch> matches, String originalLine) {
     final m = matches[i];
     final next = i + 1 < matches.length ? matches[i + 1] : null;
     final wordStart = _msFromMatch(m);
-    final nextStart = next == null ? null : _msFromMatch(next);
 
     if (next != null) {
       // Text between this stamp and the next stamp.
       final text = originalLine.substring(m.end, next.start).trim();
       if (text.isNotEmpty) {
-        words.add(LyricsWord(start: wordStart, end: nextStart, text: text));
+        words.add(
+          LyricsWord(start: wordStart, end: _msFromMatch(next), text: text),
+        );
       }
-    } else {
-      // After the last stamp: the rest of the line.
-      final text = originalLine.substring(m.end).trim();
-      if (text.isNotEmpty) {
-        words.add(LyricsWord(start: wordStart, end: null, text: text));
-      }
+      continue;
+    }
+
+    // After the last stamp: the rest of the line.
+    final text = originalLine.substring(m.end).trim();
+    if (text.isNotEmpty) {
+      words.add(LyricsWord(start: wordStart, end: null, text: text));
+    } else if (words.isNotEmpty) {
+      // A trailing stamp without text is an explicit end marker for the
+      // previous word; honour it instead of stretching the line to the next
+      // lyric line.
+      final last = words.removeLast();
+      words.add(LyricsWord(start: last.start, end: wordStart, text: last.text));
     }
   }
 
@@ -213,16 +229,17 @@ void _parseMultiStamp(
 ) {
   // NetEase multi-stamp lines: each `[mm:ss.xx]` becomes its own line with
   // the same text — matches LDDC's parser where every timestamp is its own
-  // entry.
+  // entry. The stamps only carry line starts; how long each repetition lasts
+  // is unknown, so `end` stays `null` instead of borrowing the next stamp's
+  // time (which would fabricate a duration and hide instrumental gaps).
   final text = originalLine.substring(matches.last.end).trim();
-  for (var i = 0; i < matches.length; i++) {
-    final startMs = _msFromMatch(matches[i]);
-    final endMs = i + 1 < matches.length ? _msFromMatch(matches[i + 1]) : null;
+  for (final match in matches) {
+    final startMs = _msFromMatch(match);
     output.add(
       LyricsLine(
         start: startMs,
         end: null,
-        words: <LyricsWord>[LyricsWord(start: startMs, end: endMs, text: text)],
+        words: <LyricsWord>[LyricsWord(start: startMs, end: null, text: text)],
       ),
     );
   }
@@ -232,7 +249,6 @@ void _fixupInlineStarts(LyricsData data) {
   for (var i = 0; i < data.length; i++) {
     final line = data[i];
     if (line.words.isEmpty) continue;
-    final next = i + 1 < data.length ? data[i + 1] : null;
     final fixedWords = <LyricsWord>[];
     for (var j = 0; j < line.words.length; j++) {
       final word = line.words[j];
@@ -242,14 +258,23 @@ void _fixupInlineStarts(LyricsData data) {
       if (word.end != null) {
         newEnd = word.end;
       } else if (j + 1 < line.words.length) {
+        // The next word's start is a real boundary inside this line.
         newEnd = line.words[j + 1].start;
       } else {
-        newEnd = next?.start;
+        // The last word has no known end. Do NOT borrow the next line's
+        // start: an ordinary LRC line carries no duration information, and
+        // fabricating one makes every instrumental interlude disappear.
+        newEnd = null;
       }
       fixedWords.add(LyricsWord(start: newStart, end: newEnd, text: word.text));
     }
-    final newEnd = line.end ?? next?.start;
-    data[i] = LyricsLine(start: line.start, end: newEnd, words: fixedWords);
+    // Only propagate an end that is actually known (e.g. a trailing inline
+    // end marker on a verbatim/enhanced line); otherwise keep it unknown.
+    data[i] = LyricsLine(
+      start: line.start,
+      end: line.end ?? fixedWords.last.end,
+      words: fixedWords,
+    );
   }
 }
 
@@ -263,18 +288,19 @@ void _dropBlankLines(LyricsData data) {
 
 /// Quick heuristic to detect whether a [LyricsData] is word-by-word, line-by-
 /// line, or plain text.
+///
+/// Matches LDDC's `judge_lyrics_type`: a line carrying more than one word means
+/// word-by-word timings are present even when the final word's end is unknown.
 LyricsType judgeLyricsType(LyricsData data) {
-  if (data.isEmpty) return LyricsType.plainText;
+  var type = LyricsType.plainText;
   for (final line in data) {
-    if (line.words.isEmpty) continue;
     if (line.words.length > 1) {
-      final allTimed = line.words.every(
-        (w) => w.start != null && w.end != null,
-      );
-      return allTimed ? LyricsType.verbatim : LyricsType.lineByLine;
+      type = LyricsType.verbatim;
+      break;
     }
+    if (line.start != null) type = LyricsType.lineByLine;
   }
-  return LyricsType.lineByLine;
+  return type;
 }
 
 /// Parse plain (no timestamps) lyrics separated by line breaks.

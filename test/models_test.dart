@@ -135,6 +135,171 @@ void main() {
       expect(line.words.last.end, 2000);
     });
 
+    test('toFullTimestamp keeps a long interlude blank instead of stretching '
+        'the previous line onto the next one', () {
+      final info = LyricInfo(
+        source: Source.lrclib,
+        songInfo: SongInfo(source: Source.lrclib, title: 'Demo'),
+        duration: 180000,
+      );
+      final lyrics = Lyrics(info);
+      lyrics['orig'] = parseLrc('[00:05.00]intro\n[00:30.00]verse').data;
+
+      final lines = lyrics.toFullTimestamp()['orig']!;
+      expect(lines[0].start, 5000);
+      // 5 s + the default 8 s bound, leaving 30 s - 13 s blank.
+      expect(lines[0].end, 13000);
+      expect(lines[1].start, 30000);
+      expect(lines[0].end, lessThan(lines[1].start));
+      // The last line still runs until the song ends.
+      expect(lines[1].end, 180000);
+    });
+
+    test('toFullTimestamp leaves normally spaced lines contiguous', () {
+      final info = LyricInfo(
+        source: Source.lrclib,
+        songInfo: SongInfo(source: Source.lrclib, title: 'Demo'),
+        duration: 180000,
+      );
+      final lyrics = Lyrics(info);
+      lyrics['orig'] = parseLrc('[00:05.00]a\n[00:09.00]b').data;
+
+      final lines = lyrics.toFullTimestamp()['orig']!;
+      expect(lines[0].end, 9000);
+    });
+
+    test('toFullTimestamp preserves explicitly known line ends', () {
+      final info = LyricInfo(
+        source: Source.lrclib,
+        songInfo: SongInfo(source: Source.lrclib, title: 'Demo'),
+        duration: 180000,
+      );
+      final lyrics = Lyrics(info);
+      lyrics['orig'] = LyricsData([
+        LyricsLine(
+          start: 5000,
+          end: 7000,
+          words: const [LyricsWord(start: 5000, end: 7000, text: 'a')],
+        ),
+        LyricsLine(
+          start: 30000,
+          end: null,
+          words: const [LyricsWord(start: 30000, end: null, text: 'b')],
+        ),
+      ]);
+
+      final lines = lyrics.toFullTimestamp()['orig']!;
+      expect(lines[0].end, 7000);
+      expect(lines[1].end, 180000);
+    });
+
+    test(
+      'toFullTimestamp can restore the legacy stretch-to-next behaviour',
+      () {
+        final info = LyricInfo(
+          source: Source.lrclib,
+          songInfo: SongInfo(source: Source.lrclib, title: 'Demo'),
+          duration: 180000,
+        );
+        final lyrics = Lyrics(info);
+        lyrics['orig'] = parseLrc('[00:05.00]a\n[00:30.00]b').data;
+
+        final lines = lyrics.toFullTimestamp(maxLineDurationMs: null)['orig']!;
+        expect(lines[0].end, 30000);
+      },
+    );
+
+    test('toFullTimestamp treats a multi-word line with an unknown last word '
+        'end as unknown-ended (not bounded by an inner word end)', () {
+      final info = LyricInfo(
+        source: Source.lrclib,
+        songInfo: SongInfo(source: Source.lrclib, title: 'Demo'),
+        duration: 180000,
+      );
+      final lyrics = Lyrics(info);
+      lyrics['orig'] = parseLrc(
+        '[00:00.00]Hel[00:00.40]lo[00:00.80]world\n[00:10.00]next',
+      ).data;
+
+      final lines = lyrics.toFullTimestamp()['orig']!;
+      expect(lines[0].end, 8000);
+      expect(lines[0].words.last.end, 8000);
+      expect(lines[1].start, 10000);
+    });
+
+    test('toFullTimestamp caps multi-stamp lines instead of bridging them', () {
+      final info = LyricInfo(
+        source: Source.lrclib,
+        songInfo: SongInfo(source: Source.lrclib, title: 'Demo'),
+        duration: 180000,
+      );
+      final lyrics = Lyrics(info);
+      lyrics['orig'] = parseLrc(
+        '[00:10.00][00:20.00]shared\n[00:30.00]next',
+      ).data;
+
+      final lines = lyrics.toFullTimestamp()['orig']!;
+      expect(lines[0].end, 18000);
+      expect(lines[1].end, 28000);
+      expect(lines[2].end, 180000);
+    });
+
+    test('toFullTimestamp caps only gaps beyond the bound', () {
+      final info = LyricInfo(
+        source: Source.lrclib,
+        songInfo: SongInfo(source: Source.lrclib, title: 'Demo'),
+        duration: 180000,
+      );
+
+      Lyrics make(String lrc) {
+        final lyrics = Lyrics(info);
+        lyrics['orig'] = parseLrc(lrc).data;
+        return lyrics;
+      }
+
+      // Exactly at the bound: still contiguous.
+      expect(
+        make('[00:00.00]a\n[00:08.00]b').toFullTimestamp()['orig']![0].end,
+        8000,
+      );
+      // Past the bound: capped, leaving a gap.
+      expect(
+        make('[00:00.00]a\n[00:08.10]b').toFullTimestamp()['orig']![0].end,
+        8000,
+      );
+    });
+
+    test('toFullTimestamp does not collapse the last line without duration', () {
+      final info = LyricInfo(
+        source: Source.lrclib,
+        songInfo: SongInfo(source: Source.lrclib, title: 'Demo'),
+      );
+      final lyrics = Lyrics(info);
+      lyrics['orig'] = parseLrc('[00:05.00]a\n[00:30.00]b').data;
+
+      final fs = lyrics.toFullTimestamp();
+      final lines = fs['orig']!;
+      expect(lines[0].end, 13000);
+      // Duration is unknown, so the bound is used instead of a zero-length cue.
+      expect(lines[1].end, 38000);
+    });
+
+    test('toFullTimestamp bounds a single multi-word line whose inferred '
+        'duration ends at the last word start', () {
+      final info = LyricInfo(
+        source: Source.lrclib,
+        songInfo: SongInfo(source: Source.lrclib, title: 'Demo'),
+      );
+      final lyrics = Lyrics(info);
+      lyrics['orig'] = parseLrc(
+        '[00:00.00]Hel[00:00.40]lo[00:00.80]world',
+      ).data;
+
+      final line = lyrics.toFullTimestamp()['orig']!.single;
+      expect(line.end, 8000);
+      expect(line.words.last.end, 8000);
+    });
+
     test(
       'inferredDuration walks the last word of orig when duration is null',
       () {

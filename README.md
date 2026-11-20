@@ -76,6 +76,29 @@ Run the bundled CLI:
 dart run bin/lyrics_now.dart "Kud Wafter --search"
 ```
 
+## Plain-LRC line durations and interludes
+
+Ordinary line-by-line LRC only carries line *starts*; it has no information
+about how long a line is sung or where an instrumental interlude sits.
+`parseLrc` therefore leaves `LyricsLine.end` (and the last word's `end`) as
+`null` instead of stretching the line onto the next line's start. Explicit end
+markers are still honoured (trailing `<mm:ss.xx>` on enhanced lines, trailing
+`[mm:ss.xx]` on verbatim lines).
+
+When converting to full timestamps, `Lyrics.toFullTimestamp` bounds unknown
+ends with `maxLineDurationMs` (default `Lyrics.defaultMaxLineDurationMs`, 8 s)
+so a long gap between two lines remains blank — a player can render it as an
+instrumental interlude instead of keeping the previous line highlighted for
+the whole gap. Only gaps *between* lines are treated this way: the final line
+still runs to the track duration (or to the same bound when the duration is
+unknown). Pass `maxLineDurationMs: null` to restore the legacy
+stretch-to-next-line behaviour:
+
+```dart
+final full = lyrics.toFullTimestamp();               // interlude gaps preserved
+final legacy = lyrics.toFullTimestamp(maxLineDurationMs: null);
+```
+
 ## NetEase anonymous-login persistence
 
 `NeProvider` performs a one-time anonymous auto-login on first use and caches

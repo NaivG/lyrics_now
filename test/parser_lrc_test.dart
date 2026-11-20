@@ -16,6 +16,62 @@ void main() {
       expect(result.data[1].words.single.text, 'Second line');
     });
 
+    test(
+      'keeps plain-LRC ends unknown instead of stretching to the next line',
+      () {
+        // Ordinary LRC only carries line starts. The parser must not invent an
+        // end from the next line's start: otherwise there is no way to tell a
+        // held line from an instrumental interlude.
+        const lrc = '[00:10.00]First line\n[00:40.00]Second line';
+        final result = parseLrc(lrc);
+
+        expect(result.data[0].start, 10000);
+        expect(result.data[0].end, isNull);
+        expect(result.data[0].words.single.start, 10000);
+        expect(result.data[0].words.single.end, isNull);
+        expect(result.data[1].start, 40000);
+        expect(result.data[1].end, isNull);
+      },
+    );
+
+    test('keeps multi-stamp ends unknown as well', () {
+      const lrc = '[00:10.00][00:20.00]shared text';
+      final result = parseLrc(lrc);
+      expect(result.data[0].end, isNull);
+      expect(result.data[0].words.single.end, isNull);
+      expect(result.data[1].end, isNull);
+      expect(result.data[1].words.single.end, isNull);
+    });
+
+    test('honours an explicit trailing end marker on enhanced LRC', () {
+      const lrc = '[00:00.00]Hello<00:03.00>';
+      final result = parseLrc(lrc);
+      final line = result.data.single;
+      expect(line.start, 0);
+      expect(line.end, 3000);
+      expect(line.words.single.end, 3000);
+    });
+
+    test('honours an explicit trailing end marker on verbatim LRC', () {
+      const lrc = '[00:00.00]Hel[00:00.40]lo[00:00.80]world[00:01.20]';
+      final result = parseLrc(lrc);
+      final line = result.data.single;
+      expect(line.words, hasLength(3));
+      expect(line.words[0].end, 400);
+      expect(line.words[1].end, 800);
+      expect(line.words[2].end, 1200);
+      expect(line.end, 1200);
+    });
+
+    test('verbatim LRC without a trailing marker still has no end', () {
+      const lrc = '[00:00.00]Hel[00:00.40]lo[00:00.80]world';
+      final result = parseLrc(lrc);
+      final line = result.data.single;
+      expect(line.words[1].end, 800);
+      expect(line.words[2].end, isNull);
+      expect(line.end, isNull);
+    });
+
     test('parses verbatim (word-by-word) LRC', () {
       const lrc = '[00:00.00]Hel[00:00.40]lo[00:00.80]world';
       final result = parseLrc(lrc);
@@ -65,6 +121,22 @@ void main() {
       ]);
       expect(judgeLyricsType(verbatim), LyricsType.verbatim);
     });
+
+    test(
+      'judgeLyricsType stays verbatim when the last word end is unknown',
+      () {
+        // The final word of a verbatim/enhanced line has no end unless the file
+        // carries an explicit marker; that must not downgrade the track type.
+        expect(
+          judgeLyricsType(parseLrc('[00:00.00]He[00:00.50]llo').data),
+          LyricsType.verbatim,
+        );
+        expect(
+          judgeLyricsType(parseLrc('[00:00.00]He<00:00.50>llo').data),
+          LyricsType.verbatim,
+        );
+      },
+    );
 
     test('parses multi-stamp NetEase-style lines', () {
       const lrc = '[00:00.00][00:01.50]shared line';
